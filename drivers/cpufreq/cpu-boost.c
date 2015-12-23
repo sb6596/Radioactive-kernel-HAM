@@ -286,6 +286,16 @@ static void run_boost_migration(unsigned int cpu)
 	} else {
 		s->boost_min = 0;
 	}
+
+	/* Force policy re-evaluation to trigger adjust notifier. */
+	get_online_cpus();
+	if (cpu_online(dest_cpu)) {
+		cpufreq_update_policy(dest_cpu);
+		queue_delayed_work_on(dest_cpu, cpu_boost_wq,
+			&s->boost_rem, msecs_to_jiffies(boost_ms));
+	} else {
+		s->boost_min = 0;
+	}
 	put_online_cpus();
 }
 
@@ -548,16 +558,10 @@ static int cpu_boost_init(void)
 		s->cpu = cpu;
 		spin_lock_init(&s->lock);
 		INIT_DELAYED_WORK(&s->boost_rem, do_boost_rem);
-		s->thread = kthread_run(boost_mig_sync_thread, (void *)cpu,
-					"boost_sync/%d", cpu);
-		set_cpus_allowed(s->thread, *cpumask_of(cpu));
 	}
 	cpufreq_register_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
 	atomic_notifier_chain_register(&migration_notifier_head,
 					&boost_migration_nb);
-	ret = smpboot_register_percpu_thread(&cpuboost_threads);
-	if (ret)
-		pr_err("Cannot register cpuboost threads.\n");
 
 	ret = input_register_handler(&cpuboost_input_handler);
 	if (ret)
