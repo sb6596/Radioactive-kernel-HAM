@@ -16,16 +16,16 @@ DEFCONFIG="radioactive_defconfig"
 
 # Kernel Details
 BASE_RADIOACTIVE_VER="RADIOACTIVE_"
-VER="NOUGAT_V1.2"
+VER="NOUGAT_V1.3"
 RADIOACTIVE_VER="$BASE_RADIOACTIVE_VER$VER"
 
 # Vars
 export LOCALVERSION=~`echo $RADIOACTIVE_VER`
-export CROSS_COMPILE=${HOME}/Android/toolchains/linaro4.9/bin/arm-eabi-
+export CROSS_COMPILE=${HOME}/Android/toolchains/sm5.3/bin/arm-eabi-
 export ARCH=arm
 export SUBARCH=arm
-export KBUILD_BUILD_USER=${USER}
-export KBUILD_BUILD_HOST=${HOST}
+export KBUILD_BUILD_USER=R.Cuenca
+export KBUILD_BUILD_HOST=acuicultor
 
 # Paths
 KERNEL_DIR=`pwd`
