@@ -33,6 +33,7 @@
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/io.h>
+#include <linux/android_alarm.h>
 #include <linux/thermal.h>
 #include <mach/rpm-regulator.h>
 #include <mach/rpm-regulator-smd.h>
@@ -40,8 +41,6 @@
 #include <linux/msm_thermal_ioctl.h>
 #include <mach/rpm-smd.h>
 #include <mach/scm.h>
-#include <linux/sched.h>
-#include <linux/ratelimit.h>
 
 #define MAX_CURRENT_UA 1000000
 #define MAX_RAILS 5
@@ -50,14 +49,17 @@
 #define BYTES_PER_FUSE_ROW  8
 #define MAX_EFUSE_VALUE  16
 #define THERM_SECURE_BITE_CMD 8
-#define CORE_MAX_FREQ 2457600
 
 static struct msm_thermal_data msm_thermal_info;
 static struct delayed_work check_temp_work;
 static bool core_control_enabled;
 static uint32_t cpus_offlined;
 static DEFINE_MUTEX(core_control_mutex);
+static uint32_t wakeup_ms;
+static struct alarm thermal_rtc;
+static struct kobject *tt_kobj;
 static struct kobject *cc_kobj;
+static struct work_struct timer_work;
 static struct task_struct *hotplug_task;
 static struct task_struct *freq_mitigation_task;
 static struct task_struct *thermal_monitor_task;
@@ -1079,14 +1081,12 @@ static __ref int do_hotplug(void *data)
 {
 	int ret = 0;
 	uint32_t cpu = 0, mask = 0;
-	struct sched_param param = {.sched_priority = MAX_RT_PRIO-2};
 
 	if (!core_control_enabled) {
 		pr_debug("Core control disabled\n");
 		return -EINVAL;
 	}
 
-	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
 		while (wait_for_completion_interruptible(
 			&hotplug_notify_complete) != 0)
@@ -1290,7 +1290,7 @@ exit:
 	return ret;
 }
 
-static void do_freq_control(long temp)
+static void __ref do_freq_control(long temp)
 {
 	uint32_t cpu = 0;
 	uint32_t max_freq = cpus[cpu].limited_max_freq;
@@ -1311,7 +1311,7 @@ static void do_freq_control(long temp)
 		limit_idx += msm_thermal_info.bootup_freq_step;
 		if (limit_idx >= limit_idx_high) {
 			limit_idx = limit_idx_high;
-			max_freq = CORE_MAX_FREQ;
+			max_freq = UINT_MAX;
 		} else
 			max_freq = table[limit_idx].frequency;
 	}
@@ -1332,7 +1332,7 @@ static void do_freq_control(long temp)
 	put_online_cpus();
 }
 
-static void check_temp(struct work_struct *work)
+static void __ref check_temp(struct work_struct *work)
 {
 	static int limit_init;
 	long temp = 0;
@@ -1347,10 +1347,6 @@ static void check_temp(struct work_struct *work)
 		goto reschedule;
 	}
 
-	do_core_control(temp);
-	do_psm();
-	do_ocr();
-
 	if (!limit_init) {
 		ret = msm_thermal_get_freq_table();
 		if (ret)
@@ -1359,7 +1355,10 @@ static void check_temp(struct work_struct *work)
 			limit_init = 1;
 	}
 
+	do_core_control(temp);
 	do_vdd_restriction();
+	do_psm();
+	do_ocr();
 	do_freq_control(temp);
 
 reschedule:
@@ -1391,12 +1390,44 @@ static struct notifier_block __refdata msm_thermal_cpu_notifier = {
 	.notifier_call = msm_thermal_cpu_callback,
 };
 
+static void thermal_rtc_setup(void)
+{
+	ktime_t wakeup_time;
+	ktime_t curr_time;
+
+	curr_time = alarm_get_elapsed_realtime();
+	wakeup_time = ktime_add_us(curr_time,
+			(wakeup_ms * USEC_PER_MSEC));
+	alarm_start_range(&thermal_rtc, wakeup_time,
+			wakeup_time);
+	pr_debug("%s: Current Time: %ld %ld, Alarm set to: %ld %ld\n",
+			KBUILD_MODNAME,
+			ktime_to_timeval(curr_time).tv_sec,
+			ktime_to_timeval(curr_time).tv_usec,
+			ktime_to_timeval(wakeup_time).tv_sec,
+			ktime_to_timeval(wakeup_time).tv_usec);
+
+}
+
+static void timer_work_fn(struct work_struct *work)
+{
+	sysfs_notify(tt_kobj, NULL, "wakeup_ms");
+}
+
+static void thermal_rtc_callback(struct alarm *al)
+{
+	struct timeval ts;
+	ts = ktime_to_timeval(alarm_get_elapsed_realtime());
+	schedule_work(&timer_work);
+	pr_debug("%s: Time on alarm expiry: %ld %ld\n", KBUILD_MODNAME,
+			ts.tv_sec, ts.tv_usec);
+}
+
 static int hotplug_notify(enum thermal_trip_type type, int temp, void *data)
 {
 	struct cpu_info *cpu_node = (struct cpu_info *)data;
 
-	pr_info_ratelimited("%s reach temp threshold: %d\n",
-			       cpu_node->sensor_type, temp);
+	pr_info("%s reach temp threshold: %d\n", cpu_node->sensor_type, temp);
 
 	if (!(msm_thermal_info.core_control_mask & BIT(cpu_node->cpu)))
 		return 0;
@@ -1506,41 +1537,24 @@ init_kthread:
 
 static __ref int do_freq_mitigation(void *data)
 {
-	long temp = 0;
 	int ret = 0;
-	bool skip_mitig = false;
 	uint32_t cpu = 0, max_freq_req = 0, min_freq_req = 0;
-	struct sched_param param = {.sched_priority = MAX_RT_PRIO-1};
 
-	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
 		while (wait_for_completion_interruptible(
 			&freq_mitigation_complete) != 0)
 			;
 		INIT_COMPLETION(freq_mitigation_complete);
 
-		ret = therm_get_temp(msm_thermal_info.sensor_id,
-			THERM_TSENS_ID, &temp);
-		if (ret)
-			pr_err("Unable to read TSENS sensor:%d\n",
-				msm_thermal_info.sensor_id);
-		else if (temp <= msm_thermal_info.limit_temp_degC)
-			skip_mitig = true;
-		else
-			skip_mitig = false;
-
 		for_each_possible_cpu(cpu) {
 			max_freq_req = (cpus[cpu].max_freq) ?
 					msm_thermal_info.freq_limit :
-					CORE_MAX_FREQ;
+					UINT_MAX;
 			max_freq_req = min(max_freq_req,
 					cpus[cpu].user_max_freq);
 
 			min_freq_req = max(min_freq_limit,
 					cpus[cpu].user_min_freq);
-
-			if (skip_mitig && CORE_MAX_FREQ > max_freq_req)
-				max_freq_req = CORE_MAX_FREQ;
 
 			if ((max_freq_req == cpus[cpu].limited_max_freq)
 				&& (min_freq_req ==
@@ -1578,17 +1592,16 @@ static int freq_mitigation_notify(enum thermal_trip_type type,
 	switch (type) {
 	case THERMAL_TRIP_CONFIGURABLE_HI:
 		if (!cpu_node->max_freq) {
-			pr_info_ratelimited(
-				"Mitigating CPU%d frequency to %d\n",
-				cpu_node->cpu, msm_thermal_info.freq_limit);
+			pr_info("Mitigating CPU%d frequency to %d\n",
+				cpu_node->cpu,
+				msm_thermal_info.freq_limit);
 
 			cpu_node->max_freq = true;
 		}
 		break;
 	case THERMAL_TRIP_CONFIGURABLE_LOW:
 		if (cpu_node->max_freq) {
-			pr_info_ratelimited(
-				"Removing frequency mitigation for CPU%d\n",
+			pr_info("Removing frequency mitigation for CPU%d\n",
 				cpu_node->cpu);
 
 			cpu_node->max_freq = false;
@@ -1908,11 +1921,11 @@ static void __ref disable_msm_thermal(void)
 
 	get_online_cpus();
 	for_each_possible_cpu(cpu) {
-		if (cpus[cpu].limited_max_freq == CORE_MAX_FREQ &&
+		if (cpus[cpu].limited_max_freq == UINT_MAX &&
 			cpus[cpu].limited_min_freq == 0)
 			continue;
 		pr_info("Max frequency reset for CPU%d\n", cpu);
-		cpus[cpu].limited_max_freq = CORE_MAX_FREQ;
+		cpus[cpu].limited_max_freq = UINT_MAX;
 		cpus[cpu].limited_min_freq = 0;
 		update_cpu_freq(cpu);
 	}
@@ -2055,6 +2068,53 @@ static __refdata struct attribute *cc_attrs[] = {
 static __refdata struct attribute_group cc_attr_group = {
 	.attrs = cc_attrs,
 };
+
+static ssize_t show_wakeup_ms(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", wakeup_ms);
+}
+
+static ssize_t store_wakeup_ms(struct kobject *kobj,
+		struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	int ret;
+	ret = kstrtouint(buf, 10, &wakeup_ms);
+
+	if (ret) {
+		pr_err("%s: Trying to set invalid wakeup timer\n",
+				KBUILD_MODNAME);
+		return ret;
+	}
+
+	if (wakeup_ms > 0) {
+		thermal_rtc_setup();
+		pr_debug("%s: Timer started for %ums\n", KBUILD_MODNAME,
+				wakeup_ms);
+	} else {
+		ret = alarm_cancel(&thermal_rtc);
+		if (ret)
+			pr_debug("%s: Timer canceled\n", KBUILD_MODNAME);
+		else
+			pr_debug("%s: No active timer present to cancel\n",
+					KBUILD_MODNAME);
+
+	}
+	return count;
+}
+
+static __refdata struct kobj_attribute timer_attr =
+__ATTR(wakeup_ms, 0644, show_wakeup_ms, store_wakeup_ms);
+
+static __refdata struct attribute *tt_attrs[] = {
+	&timer_attr.attr,
+	NULL,
+};
+
+static __refdata struct attribute_group tt_attr_group = {
+	.attrs = tt_attrs,
+};
+
 static __init int msm_thermal_add_cc_nodes(void)
 {
 	struct kobject *module_kobj = NULL;
@@ -2161,9 +2221,9 @@ int msm_thermal_init(struct msm_thermal_data *pdata)
 		cpus[cpu].user_offline = 0;
 		cpus[cpu].hotplug_thresh_clear = false;
 		cpus[cpu].max_freq = false;
-		cpus[cpu].user_max_freq = CORE_MAX_FREQ;
+		cpus[cpu].user_max_freq = UINT_MAX;
 		cpus[cpu].user_min_freq = 0;
-		cpus[cpu].limited_max_freq = CORE_MAX_FREQ;
+		cpus[cpu].limited_max_freq = UINT_MAX;
 		cpus[cpu].limited_min_freq = 0;
 		cpus[cpu].freq_thresh_clear = false;
 	}
@@ -2186,7 +2246,7 @@ int msm_thermal_init(struct msm_thermal_data *pdata)
 	INIT_DELAYED_WORK(&check_temp_work, check_temp);
 	schedule_delayed_work(&check_temp_work, 0);
 
-	if (core_control_enabled)	
+	if (num_possible_cpus() > 1)
 		register_cpu_notifier(&msm_thermal_cpu_notifier);
 
 	return ret;
@@ -2996,7 +3056,7 @@ static int probe_cc(struct device_node *node, struct msm_thermal_data *data,
 	uint32_t cpu = 0;
 
 	if (num_possible_cpus() > 1) {
-		//core_control_enabled = 1;
+		core_control_enabled = 1;
 		hotplug_enabled = 1;
 	}
 
@@ -3278,6 +3338,10 @@ int __init msm_thermal_late_init(void)
 	msm_thermal_add_vdd_rstr_nodes();
 	msm_thermal_add_ocr_nodes();
 	msm_thermal_add_default_temp_limit_nodes();
+	alarm_init(&thermal_rtc, ANDROID_ALARM_ELAPSED_REALTIME_WAKEUP,
+			thermal_rtc_callback);
+	INIT_WORK(&timer_work, timer_work_fn);
+	msm_thermal_add_timer_nodes();
 
 	interrupt_mode_init();
 	return 0;
