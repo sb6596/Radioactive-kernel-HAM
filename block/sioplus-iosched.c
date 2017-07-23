@@ -3,11 +3,7 @@
  * Based on Noop, Deadline and V(R) IO schedulers.
  *
  * Copyright (C) 2012 Miguel Boton <mboton@gmail.com>
-<<<<<<< HEAD
  *           (C) 2013, 2014 Boy Petersen <boypetersen@gmail.com>
-=======
- *           (C) 2013 Boy Petersen <boypetersen@gmail.com>
->>>>>>> d55b0a4... add sio sioplus and zen iosched
  *
  *
  * This algorithm does not do any kind of sorting, as it is aimed for
@@ -17,12 +13,7 @@
  * Asynchronous and synchronous requests are not treated separately, but
  * we relay on deadlines to ensure fairness.
  *
-<<<<<<< HEAD
  * The plus version incorporates several fixes and logic improvements.
-=======
- * The plus version fixes writes_starved not being initialized on startup
- * and also modifies the write starvation counting logic.
->>>>>>> d55b0a4... add sio sioplus and zen iosched
  *
  */
 #include <linux/blkdev.h>
@@ -31,17 +22,10 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
-<<<<<<< HEAD
-=======
-#include <linux/kernel.h>
-#include <linux/compiler.h>
-#include <linux/version.h>
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 
 enum { ASYNC, SYNC };
 
 /* Tunables */
-<<<<<<< HEAD
 static const int sync_read_expire = (HZ / 4);	/* max time before a sync read is submitted. */
 static const int sync_write_expire = (HZ / 4) * 5;	/* max time before a sync write is submitted. */
 
@@ -50,16 +34,6 @@ static const int async_write_expire = (HZ * 2);	/* ditto for async, these limits
 
 static const int writes_starved = 1;		/* max times reads can starve a write */
 static const int fifo_batch     = 3;		/* # of sequential requests treated as one
-=======
-static const int sync_read_expire = (HZ / 16) * 9;	/* max time before a sync read is submitted. */
-static const int sync_write_expire = (HZ / 2) * 5;	/* max time before a sync write is submitted. */
-
-static const int async_read_expire = HZ * 4;	/* ditto for async, these limits are SOFT! */
-static const int async_write_expire = HZ * 16;	/* ditto for async, these limits are SOFT! */
-
-static const int writes_starved = 4;		/* max times reads can starve a write */
-static const int fifo_batch     = 1;		/* # of sequential requests treated as one
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 						   by the above parameters. For throughput. */
 
 /* Elevator data */
@@ -111,7 +85,6 @@ sio_add_request(struct request_queue *q, struct request *rq)
 	list_add_tail(&rq->queuelist, &sd->fifo_list[sync][data_dir]);
 }
 
-<<<<<<< HEAD
 static int
 sio_queue_empty(struct request_queue *q)
 {
@@ -121,9 +94,6 @@ sio_queue_empty(struct request_queue *q)
 	return list_empty(&sd->fifo_list[SYNC][READ]) && list_empty(&sd->fifo_list[SYNC][WRITE]) &&
 	       list_empty(&sd->fifo_list[ASYNC][READ]) && list_empty(&sd->fifo_list[ASYNC][WRITE]);
 }
-=======
-
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 
 static struct request *
 sio_expired_request(struct sio_data *sd, int sync, int data_dir)
@@ -149,12 +119,9 @@ sio_choose_expired_request(struct sio_data *sd)
 {
 	struct request *rq;
 
-<<<<<<< HEAD
 	/* Reset (non-expired-)batch-counter */
 	sd->batched = 0;
 
-=======
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 	/*
 	 * Check expired requests.
 	 * Asynchronous requests have priority over synchronous.
@@ -184,12 +151,9 @@ sio_choose_request(struct sio_data *sd, int data_dir)
 	struct list_head *sync = sd->fifo_list[SYNC];
 	struct list_head *async = sd->fifo_list[ASYNC];
 
-<<<<<<< HEAD
 	/* Increase (non-expired-)batch-counter */
 	sd->batched++;
 
-=======
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 	/*
 	 * Retrieve request from available fifo list.
 	 * Synchronous requests have priority over asynchronous.
@@ -219,11 +183,6 @@ sio_dispatch_request(struct sio_data *sd, struct request *rq)
 	rq_fifo_clear(rq);
 	elv_dispatch_add_tail(rq->q, rq);
 
-<<<<<<< HEAD
-=======
-	sd->batched++;
-
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 	if (rq_data_dir(rq)) {
 		sd->starved = 0;
 	} else {
@@ -244,23 +203,12 @@ sio_dispatch_requests(struct request_queue *q, int force)
 	 * Retrieve any expired request after a batch of
 	 * sequential requests.
 	 */
-<<<<<<< HEAD
 	if (sd->batched >= sd->fifo_batch)
 		rq = sio_choose_expired_request(sd);
 
 	/* Retrieve request */
 	if (!rq) {
 		if (sd->starved >= sd->writes_starved)
-=======
-	if (sd->batched > sd->fifo_batch) {
-		sd->batched = 0;
-		rq = sio_choose_expired_request(sd);
-	}
-
-	/* Retrieve request */
-	if (!rq) {
-		if (sd->starved > sd->writes_starved)
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 			data_dir = WRITE;
 
 		rq = sio_choose_request(sd, data_dir);
@@ -400,13 +348,8 @@ STORE_FUNCTION(sio_sync_read_expire_store, &sd->fifo_expire[SYNC][READ], 0, INT_
 STORE_FUNCTION(sio_sync_write_expire_store, &sd->fifo_expire[SYNC][WRITE], 0, INT_MAX, 1);
 STORE_FUNCTION(sio_async_read_expire_store, &sd->fifo_expire[ASYNC][READ], 0, INT_MAX, 1);
 STORE_FUNCTION(sio_async_write_expire_store, &sd->fifo_expire[ASYNC][WRITE], 0, INT_MAX, 1);
-<<<<<<< HEAD
 STORE_FUNCTION(sio_fifo_batch_store, &sd->fifo_batch, 1, INT_MAX, 0);
 STORE_FUNCTION(sio_writes_starved_store, &sd->writes_starved, 1, INT_MAX, 0);
-=======
-STORE_FUNCTION(sio_fifo_batch_store, &sd->fifo_batch, 0, INT_MAX, 0);
-STORE_FUNCTION(sio_writes_starved_store, &sd->writes_starved, 0, INT_MAX, 0);
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 #undef STORE_FUNCTION
 
 #define DD_ATTR(name) \
@@ -428,13 +371,7 @@ static struct elevator_type iosched_sioplus = {
 		.elevator_merge_req_fn		= sio_merged_requests,
 		.elevator_dispatch_fn		= sio_dispatch_requests,
 		.elevator_add_req_fn		= sio_add_request,
-<<<<<<< HEAD
 		.elevator_queue_empty_fn	= sio_queue_empty,
-=======
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,38)
-		.elevator_queue_empty_fn	= sio_queue_empty,
-#endif
->>>>>>> d55b0a4... add sio sioplus and zen iosched
 		.elevator_former_req_fn		= sio_former_request,
 		.elevator_latter_req_fn		= sio_latter_request,
 		.elevator_init_fn		= sio_init_queue,
@@ -466,7 +403,3 @@ module_exit(sioplus_exit);
 MODULE_AUTHOR("Miguel Boton");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Simple IO scheduler plus");
-<<<<<<< HEAD
-=======
-
->>>>>>> d55b0a4... add sio sioplus and zen iosched
