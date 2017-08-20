@@ -263,12 +263,14 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 	return inet_csk_diag_fill(sk, skb, r, pid, seq, nlmsg_flags, unlh);
 }
 
-struct sock *inet_diag_find_one_icsk(struct net *net,
-				     struct inet_hashinfo *hashinfo,
-				     struct inet_diag_req_v2 *req)
+int inet_diag_dump_one_icsk(struct inet_hashinfo *hashinfo, struct sk_buff *in_skb,
+		const struct nlmsghdr *nlh, struct inet_diag_req_v2 *req)
 {
+	int err;
 	struct sock *sk;
+	struct sk_buff *rep;
 
+	err = -EINVAL;
 	if (req->sdiag_family == AF_INET) {
 		sk = inet_lookup(&init_net, hashinfo, req->id.idiag_dst[0],
 				 req->id.idiag_dport, req->id.idiag_src[0],
@@ -285,37 +287,16 @@ struct sock *inet_diag_find_one_icsk(struct net *net,
 	}
 #endif
 	else {
-		return ERR_PTR(-EINVAL);
+		goto out_nosk;
 	}
 
-	if (!sk)
-		return ERR_PTR(-ENOENT);
+	err = -ENOENT;
+	if (sk == NULL)
+		goto out_nosk;
 
-	if (sock_diag_check_cookie(sk, req->id.idiag_cookie)) {
-		if (sk->sk_state == TCP_TIME_WAIT)
-			inet_twsk_put((struct inet_timewait_sock *)sk);
-		else
-			sock_put(sk);
-		return ERR_PTR(-ENOENT);
-	}
-
-	return sk;
-}
-EXPORT_SYMBOL_GPL(inet_diag_find_one_icsk);
-
-int inet_diag_dump_one_icsk(struct inet_hashinfo *hashinfo,
-			    struct sk_buff *in_skb,
-			    const struct nlmsghdr *nlh,
-			    struct inet_diag_req_v2 *req)
-{
-	struct net *net = sock_net(in_skb->sk);
-	struct sk_buff *rep;
-	struct sock *sk;
-	int err;
-
-	sk = inet_diag_find_one_icsk(net, hashinfo, req);
-	if (IS_ERR(sk))
-		return PTR_ERR(sk);
+	err = sock_diag_check_cookie(sk, req->id.idiag_cookie);
+	if (err)
+		goto out;
 
 	err = -ENOMEM;
 	rep = alloc_skb(NLMSG_SPACE((sizeof(struct inet_diag_msg) +
@@ -345,6 +326,7 @@ out:
 		else
 			sock_put(sk);
 	}
+out_nosk:
 	return err;
 }
 EXPORT_SYMBOL_GPL(inet_diag_dump_one_icsk);
