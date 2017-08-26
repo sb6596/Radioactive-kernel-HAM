@@ -21,6 +21,7 @@
 #include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/fs.h>
+#include <linux/freezer.h>
 #include <linux/list.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
@@ -1612,12 +1613,6 @@ static void binder_transaction_buffer_release(struct binder_proc *proc,
 			parent_buffer = parent->buffer -
 				proc->user_buffer_offset;
 
-			fd_buf_size = sizeof(u32) * fda->num_fds;
-			if (fda->num_fds >= SIZE_MAX / sizeof(u32)) {
-				pr_err("transaction release %d invalid number of fds (%lld)\n",
-				       debug_id, (u64)fda->num_fds);
-				continue;
-			}
 			if (fd_buf_size > parent->length ||
 			    fda->parent_offset > parent->length - fd_buf_size) {
 				/* No space for all file descriptors here. */
@@ -1811,12 +1806,6 @@ static int binder_translate_fd_array(struct binder_fd_array_object *fda,
 	struct binder_proc *proc = thread->proc;
 	struct binder_proc *target_proc = t->to_proc;
 
-	fd_buf_size = sizeof(u32) * fda->num_fds;
-	if (fda->num_fds >= SIZE_MAX / sizeof(u32)) {
-		binder_user_error("%d:%d got transaction with invalid number of fds (%lld)\n",
-				  proc->pid, thread->pid, (u64)fda->num_fds);
-		return -EINVAL;
-	}
 	if (fd_buf_size > parent->length ||
 	    fda->parent_offset > parent->length - fd_buf_size) {
 		/* No space for all file descriptors here. */
