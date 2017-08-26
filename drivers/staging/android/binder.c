@@ -1903,8 +1903,8 @@ static int binder_thread_write(struct binder_proc *proc,
 		}
 		case BC_INCREFS_DONE:
 		case BC_ACQUIRE_DONE: {
-			void __user *node_ptr;
-			void *cookie;
+			binder_uintptr_t node_ptr;
+			binder_uintptr_t cookie;
 			struct binder_node *node;
 
 			if (get_user(node_ptr, (binder_uintptr_t __user *)ptr))
