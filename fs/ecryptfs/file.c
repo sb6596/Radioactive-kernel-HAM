@@ -138,6 +138,8 @@ out:
 	return rc;
 }
 
+struct kmem_cache *ecryptfs_file_info_cache;
+
 static void ecryptfs_vma_close(struct vm_area_struct *vma)
 {
 	filemap_write_and_wait(vma->vm_file->f_mapping);
